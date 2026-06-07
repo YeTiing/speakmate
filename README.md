@@ -43,16 +43,19 @@ src/               （前端源码，需要先 npm run build）
 
 ## 快速开始
 
+确保已安装 Node.js 20+。
+
 ```bash
 npm install
-npm run dev        # 同时启动 Vite 前端和 API 服务
+npm start
 ```
 
-生产模式：
+**启动后打开浏览器访问 `http://127.0.0.1:8787`**（仅限本机访问，默认不对外暴露）。
+
+开发模式（支持前端热更新）：
 
 ```bash
-npm run build
-npm start          # 统一端口提供前端静态文件和 API
+npm run dev
 ```
 
 ## 环境变量配置
