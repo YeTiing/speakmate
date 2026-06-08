@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
+import * as iflytek from "./iflytek.mjs";
 
 loadEnv();
 
@@ -25,7 +26,9 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         ok: true,
         llm: Boolean(LLM_API_KEY),
-        pronunciation: Boolean(process.env.AZURE_SPEECH_KEY && process.env.AZURE_SPEECH_REGION),
+        asr: iflytek.ENABLED(),
+        tts: iflytek.ENABLED(),
+        pronunciation: Boolean(iflytek.ENABLED() || (process.env.AZURE_SPEECH_KEY && process.env.AZURE_SPEECH_REGION)),
       });
       return;
     }
@@ -57,6 +60,18 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/api/pronunciation") {
       const body = await readJson(request, 18 * 1024 * 1024);
       sendJson(response, 200, await assessPronunciation(body));
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/asr") {
+      const body = await readJson(request, 18 * 1024 * 1024);
+      sendJson(response, 200, await handleAsr(body));
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/tts") {
+      const body = await readJson(request);
+      sendJson(response, 200, await handleTts(body));
       return;
     }
 
@@ -380,9 +395,27 @@ async function streamDialogue(body, response) {
 }
 
 async function assessPronunciation(body) {
-  if (!process.env.AZURE_SPEECH_KEY || !process.env.AZURE_SPEECH_REGION) return { mode: "heuristic", assessment: null };
   if (!body.audioBase64 || !body.referenceText) return { mode: "heuristic", assessment: null };
 
+  // Try iFlytek first (best latency in China)
+  if (iflytek.ENABLED()) {
+    try {
+      const result = await iflytek.pronounce(body.audioBase64, body.referenceText);
+      if (result.assessment) return result;
+    } catch { /* fall through to Azure/heuristic */ }
+  }
+
+  // Fall back to Azure
+  if (process.env.AZURE_SPEECH_KEY && process.env.AZURE_SPEECH_REGION) {
+    try {
+      return await azurePronounce(body);
+    } catch { /* fall through to heuristic */ }
+  }
+
+  return { mode: "heuristic", assessment: null };
+}
+
+async function azurePronounce(body) {
   const region = process.env.AZURE_SPEECH_REGION;
   const pronunciationConfig = Buffer.from(
     JSON.stringify({
@@ -422,6 +455,28 @@ async function assessPronunciation(body) {
       pronunciationScore: Math.round(assessment.PronScore ?? 0),
     },
   };
+}
+
+async function handleAsr(body) {
+  if (!body.audioBase64) return { error: "audioBase64 is required" };
+  if (!iflytek.ENABLED()) return { error: "iFlytek not configured" };
+  try {
+    const text = await iflytek.asr(body.audioBase64, body.encoding || "raw", body.rate || 16000);
+    return { text };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "ASR failed" };
+  }
+}
+
+async function handleTts(body) {
+  if (!body.text) return { error: "text is required" };
+  if (!iflytek.ENABLED()) return { error: "iFlytek not configured" };
+  try {
+    const audio = await iflytek.tts(body.text, body.voice || "xiaoyan");
+    return { audio: audio.toString("base64"), mimeType: "audio/mpeg" };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "TTS failed" };
+  }
 }
 
 function loadEnv() {
